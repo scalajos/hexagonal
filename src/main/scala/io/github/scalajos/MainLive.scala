@@ -20,26 +20,24 @@ extension [A](effect: ZIO[Any, ?, A])
 // ------------------------------------------------------------------------------------------------
 // ISSUES :
 // (ubuntu 22.04, openjdk 17.0.3)
-// 1) default logger is not removed
-//    we see that ZIO.logDebug in MainLive generates too logs, one for the default, one for slf4j/logback
-// 2) some ZIO.logDebug are silent (why ?)
+// 1) some ZIO.logDebug are silent (why ?)
 //    see class io.github.scalajos.adapters.inbound.CustomerServiceRestAdapter (method create() for instance)
 //    ZIO.logDebug don't log anything, they should. IO is triggered as printLine shows
 //    in at least one other class (io.github.scalajos.adapters.inbound.RestServer), ZIO.logDebug is working
+//
+// 0) fixed redundant logger, layer SLF4J.slf4j(format = zio.logging.LogFormat.colored) was also added in dependencies layers, I removed it
 
 object MainLive:
-  private val runtime: zio.Runtime[Any] = zio.Runtime.default
-  private val slf4jlogger: ZLayer[Any, Nothing, Unit] = zio.Runtime.removeDefaultLoggers >>> SLF4J.slf4j
-
-  // SET GIVEN DEPENDENCIES
-  private val loggingBehavior: ZLayer[Any, Nothing, Unit] = SLF4J.slf4j(
-    format = zio.logging.LogFormat.colored
-  )
+  private val runtime2: Runtime.Scoped[Unit] = {
+    val logger = Runtime.removeDefaultLoggers >>> SLF4J.slf4j(
+      format = zio.logging.LogFormat.colored
+    )
+    Unsafe.unsafe {
+      Runtime.unsafe.fromLayer(logger)
+    }
+  }
 
   private val dependencies: ZLayer[Any, Nothing, CustomerServiceRestAdapter] = ZLayer.make[CustomerServiceRestAdapter](
-    slf4jlogger,
-    loggingBehavior,
-
     // SPI ADAPTER : IN-MEMORY DB
     ZLayer.succeed[CustomerRepositorySPI](CustomerRepositoryInMemoryAdapter), // ZLayer[Any, Nothing, CustomerRepositorySPI] <=> ULayer[CustomerRepositorySPI]
     // ^
@@ -63,8 +61,9 @@ object MainLive:
     }
     yield ()
 
-    program.provideLayer(dependencies)
-           .unsafeRun(runtime)
+    Unsafe.unsafe {
+      runtime2.unsafe.run(program.provideLayer(dependencies)).getOrThrowFiberFailure()
+    }
 
 /*
 Unsafe.unsafe(Runtime.default.unsafe.run(logic))
